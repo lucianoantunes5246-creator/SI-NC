@@ -1,5 +1,5 @@
 import numpy as np
-from app.core.observables import f_schwarzschild
+from app.core.observables import f_schwarzschild, f_nc_schwarzschild
 
 def _drdphi0_from_E(M: float, E: float, L: float, r0: float, particle: str, radial_sign: str) -> float:
     """
@@ -104,4 +104,93 @@ def orbit_u_phi(
             break
 
     r = 1.0 / u
+    return phi, r
+
+def orbit_r_phi_nc(
+    M: float,
+    theta: float,
+    L: float,
+    r0: float,
+    E: float,
+    radial_sign: str,
+    phi_max: float,
+    n: int,
+    particle: str,
+) -> tuple[np.ndarray, np.ndarray]:
+    """
+    Integra órbita para métrica não-comutativa tipo Schwarzschild:
+      ds^2 = -f(r) dt^2 + f(r)^{-1} dr^2 + r^2 dΩ^2
+    usando dr/dφ = ± (r^2/L) * sqrt(E^2 - f(r) * (1 + L^2/r^2)) (massivo)
+         ou dr/dφ = ± (r^2/L) * sqrt(E^2 - f(r) * (L^2/r^2)) (fóton)
+    """
+    if M <= 0:
+        raise ValueError("M > 0")
+    if theta <= 0:
+        raise ValueError("theta > 0")
+    if L <= 0:
+        raise ValueError("L > 0")
+    if r0 <= 0:
+        raise ValueError("r0 > 0")
+    if n < 10:
+        raise ValueError("n >= 10")
+
+    phi = np.linspace(0.0, phi_max, n, dtype=np.float64)
+    h = phi[1] - phi[0]
+    r = np.empty(n, dtype=np.float64)
+    r[0] = r0
+
+    sign = -1.0 if radial_sign == "in" else 1.0
+
+    f0 = float(f_nc_schwarzschild(np.array([r0], dtype=np.float64), M, theta)[0])
+    if particle == "massive":
+        veff2_0 = f0 * (1.0 + (L * L) / (r0 * r0))
+    elif particle == "photon":
+        veff2_0 = f0 * ((L * L) / (r0 * r0))
+    else:
+        raise ValueError("particle deve ser 'massive' ou 'photon'")
+
+    if (E * E) < veff2_0:
+        raise ValueError(
+            f"Parâmetros proibidos em r0={r0:.6g}: E²={(E*E):.6g} < Veff²(r0)={veff2_0:.6g}. "
+            f"Ajuste E/L ou escolha outro r0."
+        )
+
+    def drdphi(rval: float) -> float:
+        if rval <= 0 or not np.isfinite(rval):
+            return np.nan
+        f = float(f_nc_schwarzschild(np.array([rval], dtype=np.float64), M, theta)[0])
+        if particle == "massive":
+            inside = (E * E) - f * (1.0 + (L * L) / (rval * rval))
+        elif particle == "photon":
+            inside = (E * E) - f * ((L * L) / (rval * rval))
+        else:
+            raise ValueError("particle deve ser 'massive' ou 'photon'")
+        if inside < -1e-12:
+            return np.nan
+        inside = max(inside, 0.0)
+        return sign * (rval * rval / L) * np.sqrt(inside)
+
+    for i in range(n - 1):
+        ri = r[i]
+        if not np.isfinite(ri):
+            r[i + 1 :] = np.nan
+            break
+        k1 = drdphi(ri)
+        if not np.isfinite(k1):
+            r[i + 1 :] = np.nan
+            break
+        k2 = drdphi(ri + 0.5 * h * k1)
+        if not np.isfinite(k2):
+            r[i + 1 :] = np.nan
+            break
+        k3 = drdphi(ri + 0.5 * h * k2)
+        if not np.isfinite(k3):
+            r[i + 1 :] = np.nan
+            break
+        k4 = drdphi(ri + h * k3)
+        if not np.isfinite(k4):
+            r[i + 1 :] = np.nan
+            break
+        r[i + 1] = ri + (h / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
     return phi, r
